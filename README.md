@@ -192,3 +192,5 @@ Having issues? Found a bug?
 >*Virtual webcam device was not included in client version v1.0.5 as I was investing an issue. I released it in the next version with Virtual camera included. If you need the Virtual camera, please install client version v1.0.6*
 
 **Happy streaming! Made with ❤️ and ☕ by developers, for developers.**
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/R5O327R68W)
