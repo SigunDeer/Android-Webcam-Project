@@ -72,6 +72,7 @@ class CameraViewModel : ViewModel() {
         val hasFlashUnit: Boolean = false,
         val isFlashEnabled: Boolean = false,
         val zoom: Float = 1.0f,
+        val zoomMin: Float = 1.0f,
         val zoomMax: Float = 1.0f,
     )
 
@@ -142,6 +143,7 @@ class CameraViewModel : ViewModel() {
             val s = _settings.value
             val currentMode = _streamMode.value
             val maxZoom = getMaxZoom()
+            val minZoom = getMinZoom()
             VideoStreamServer.FeaturesResponse(
                 resolutions = StreamResolution.entries.map { "${it.size.width}x${it.size.height}" },
                 manual_focus = true,
@@ -150,8 +152,8 @@ class CameraViewModel : ViewModel() {
                 stream_protocol = currentMode,
                 server_port = 8080, // TODO - Give users option to modify it
                 zoom_max = maxZoom,
-                zoom_min = 1.0f,
-                has_zoom = maxZoom > 1f,
+                zoom_min = minZoom,
+                has_zoom = maxZoom > minZoom,
                 rtsp_port = if (currentMode == StreamMode.H264_RTSP) rtspPort else null
             )
         }
@@ -389,11 +391,12 @@ class CameraViewModel : ViewModel() {
             _settings.value = _settings.value.copy(hasFlashUnit = flashAvailable)
 
             // Refresh zoom range for the RTSP camera and re-apply stored zoom
-            val maxZoom = runCatching { camera.getZoomRange().upper }.getOrNull()
-                ?: _settings.value.zoomMax
-            val currentZoom = _settings.value.zoom.coerceIn(1f, maxZoom)
-            _settings.value = _settings.value.copy(zoomMax = maxZoom, zoom = currentZoom)
-            if (currentZoom > 1f) {
+            val zoomRange = runCatching { camera.getZoomRange() }.getOrNull()
+            val maxZoom = zoomRange?.upper ?: _settings.value.zoomMax
+            val minZoom = zoomRange?.lower ?: _settings.value.zoomMin
+            val currentZoom = _settings.value.zoom.coerceIn(minZoom, maxZoom)
+            _settings.value = _settings.value.copy(zoomMin = minZoom, zoomMax = maxZoom, zoom = currentZoom)
+            if (currentZoom != 1f) {
                 runCatching { camera.setZoom(currentZoom) }
                     .onFailure { Log.e("AWA", "RTSP zoom reapply failed", it) }
             }
@@ -510,10 +513,12 @@ class CameraViewModel : ViewModel() {
             )
 
             // Refresh zoom range for the bound camera and re-apply stored zoom
-            val maxZoom = camera.cameraInfo.zoomState.value?.maxZoomRatio ?: _settings.value.zoomMax
-            val currentZoom = s.zoom.coerceIn(1f, maxZoom)
-            _settings.value = _settings.value.copy(zoomMax = maxZoom, zoom = currentZoom)
-            if (currentZoom > 1f) {
+            val zoomState = camera.cameraInfo.zoomState.value
+            val maxZoom = zoomState?.maxZoomRatio ?: _settings.value.zoomMax
+            val minZoom = zoomState?.minZoomRatio ?: _settings.value.zoomMin
+            val currentZoom = s.zoom.coerceIn(minZoom, maxZoom)
+            _settings.value = _settings.value.copy(zoomMin = minZoom, zoomMax = maxZoom, zoom = currentZoom)
+            if (currentZoom != 1f) {
                 runCatching { camera.cameraControl.setZoomRatio(currentZoom) }
                     .onFailure { Log.e("AWA", "MJPEG zoom reapply failed", it) }
             }
@@ -754,8 +759,8 @@ class CameraViewModel : ViewModel() {
     }
 
     fun setZoom(zoom: Float) {
-        val maxZoom = getMaxZoom()
-        val clamped = zoom.coerceIn(1f, maxZoom)
+        val (minZoom, maxZoom) = getZoomRange()
+        val clamped = zoom.coerceIn(minZoom, maxZoom)
         if (_settings.value.zoom == clamped) return
         _settings.value = _settings.value.copy(zoom = clamped)
         applyZoom(clamped)
@@ -773,6 +778,21 @@ class CameraViewModel : ViewModel() {
         }
         val resolved = live ?: _settings.value.zoomMax
         return if (resolved > 1f) resolved else _settings.value.zoomMax
+    }
+
+    fun getMinZoom(): Float {
+        val live = when (_streamMode.value) {
+            StreamMode.MJPEG -> mjpegCamera?.cameraInfo?.zoomState?.value?.minZoomRatio
+            StreamMode.H264_RTSP -> runCatching { rtspCamera?.getZoomRange()?.lower }.getOrNull()
+        }
+        val resolved = live ?: _settings.value.zoomMin
+        return if (resolved <= 1f) resolved else 1f
+    }
+
+    fun getZoomRange(): Pair<Float, Float> {
+        val min = getMinZoom()
+        val max = getMaxZoom()
+        return min to maxOf(max, min)
     }
 
     private fun applyZoom(zoom: Float) {

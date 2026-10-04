@@ -289,7 +289,7 @@ private fun CameraContent(camView: CameraViewModel) {
                                     Slider(
                                         value = settings.zoom,
                                         onValueChange = { camView.setZoom(it) },
-                                        valueRange = 1f..maxOf(settings.zoomMax, 1.1f),
+                                        valueRange = settings.zoomMin..maxOf(settings.zoomMax, settings.zoomMin + 0.1f),
                                         modifier = Modifier.width(300.dp)
                                     )
                                 }
