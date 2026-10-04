@@ -72,6 +72,7 @@ class CameraViewModel : ViewModel() {
         val hasFlashUnit: Boolean = false,
         val isFlashEnabled: Boolean = false,
         val zoom: Float = 1.0f,
+        val zoomMax: Float = 1.0f,
     )
 
     @Volatile
@@ -140,6 +141,7 @@ class CameraViewModel : ViewModel() {
         VideoStreamServer.featuresProvider = {
             val s = _settings.value
             val currentMode = _streamMode.value
+            val maxZoom = getMaxZoom()
             VideoStreamServer.FeaturesResponse(
                 resolutions = StreamResolution.entries.map { "${it.size.width}x${it.size.height}" },
                 manual_focus = true,
@@ -147,9 +149,9 @@ class CameraViewModel : ViewModel() {
                 exposure_upper = s.exposureRange.last,
                 stream_protocol = currentMode,
                 server_port = 8080, // TODO - Give users option to modify it
-                zoom_max = 1.0f,
+                zoom_max = maxZoom,
                 zoom_min = 1.0f,
-                has_zoom = false, // TODO - Add zoom support
+                has_zoom = maxZoom > 1f,
                 rtsp_port = if (currentMode == StreamMode.H264_RTSP) rtspPort else null
             )
         }
@@ -386,6 +388,16 @@ class CameraViewModel : ViewModel() {
                 .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
             _settings.value = _settings.value.copy(hasFlashUnit = flashAvailable)
 
+            // Refresh zoom range for the RTSP camera and re-apply stored zoom
+            val maxZoom = runCatching { camera.getZoomRange().upper }.getOrNull()
+                ?: _settings.value.zoomMax
+            val currentZoom = _settings.value.zoom.coerceIn(1f, maxZoom)
+            _settings.value = _settings.value.copy(zoomMax = maxZoom, zoom = currentZoom)
+            if (currentZoom > 1f) {
+                runCatching { camera.setZoom(currentZoom) }
+                    .onFailure { Log.e("AWA", "RTSP zoom reapply failed", it) }
+            }
+
             camera.startStream()
             Log.d("AWA", "RTSP server started on port $rtspPort")
             openGlView?.let { view ->
@@ -496,6 +508,15 @@ class CameraViewModel : ViewModel() {
             _settings.value = _settings.value.copy(
                 hasFlashUnit = camera.cameraInfo.hasFlashUnit()  // add this field to CameraSettings
             )
+
+            // Refresh zoom range for the bound camera and re-apply stored zoom
+            val maxZoom = camera.cameraInfo.zoomState.value?.maxZoomRatio ?: _settings.value.zoomMax
+            val currentZoom = s.zoom.coerceIn(1f, maxZoom)
+            _settings.value = _settings.value.copy(zoomMax = maxZoom, zoom = currentZoom)
+            if (currentZoom > 1f) {
+                runCatching { camera.cameraControl.setZoomRatio(currentZoom) }
+                    .onFailure { Log.e("AWA", "MJPEG zoom reapply failed", it) }
+            }
         }, ContextCompat.getMainExecutor(ctx))
     }
 
@@ -733,7 +754,36 @@ class CameraViewModel : ViewModel() {
     }
 
     fun setZoom(zoom: Float) {
-        _settings.value = _settings.value.copy(zoom = zoom)
+        val maxZoom = getMaxZoom()
+        val clamped = zoom.coerceIn(1f, maxZoom)
+        if (_settings.value.zoom == clamped) return
+        _settings.value = _settings.value.copy(zoom = clamped)
+        applyZoom(clamped)
+    }
+
+    fun pinchZoom(zoomChange: Float) {
+        if (zoomChange <= 0f || zoomChange.isNaN()) return
+        setZoom(_settings.value.zoom * zoomChange)
+    }
+
+    fun getMaxZoom(): Float {
+        val live = when (_streamMode.value) {
+            StreamMode.MJPEG -> mjpegCamera?.cameraInfo?.zoomState?.value?.maxZoomRatio
+            StreamMode.H264_RTSP -> runCatching { rtspCamera?.getZoomRange()?.upper }.getOrNull()
+        }
+        val resolved = live ?: _settings.value.zoomMax
+        return if (resolved > 1f) resolved else _settings.value.zoomMax
+    }
+
+    private fun applyZoom(zoom: Float) {
+        when (_streamMode.value) {
+            StreamMode.MJPEG -> runCatching {
+                mjpegCamera?.cameraControl?.setZoomRatio(zoom)
+            }.onFailure { Log.e("AWA", "MJPEG setZoomRatio failed", it) }
+            StreamMode.H264_RTSP -> runCatching {
+                rtspCamera?.setZoom(zoom)
+            }.onFailure { Log.e("AWA", "RTSP setZoom failed", it) }
+        }
     }
 
     fun setExposure(index: Int) {
